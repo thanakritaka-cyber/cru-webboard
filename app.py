@@ -1,199 +1,110 @@
 import os
-import sqlite3
-import time
-from flask import Flask, flash, redirect, render_template, request, session, url_for
-from werkzeug.utils import secure_filename
+from flask import Flask, render_template, request, redirect, url_for, session, flash
+from supabase import create_client
 
 app = Flask(__name__)
-app.secret_key = 'super-secret-key-change-this'
-app.config['TEMPLATES_AUTO_RELOAD'] = True
+app.secret_key = 'your_secret_key_change_this_to_something_secure'
 
-UPLOAD_FOLDER = 'static/uploads'
-ALLOWED_EXTENSIONS = {'png', 'jpg', 'jpeg', 'gif'}
-app.config['UPLOAD_FOLDER'] = UPLOAD_FOLDER
+# ดึงค่า URL และ Key จาก Environment Variables
+SUPABASE_URL = os.environ.get("SUPABASE_URL")
+SUPABASE_KEY = os.environ.get("SUPABASE_KEY")
 
-os.makedirs(UPLOAD_FOLDER, exist_ok=True)
+# ตรวจสอบการเชื่อมต่อ Supabase
+if not SUPABASE_URL or not SUPABASE_KEY:
+    print("Warning: SUPABASE_URL or SUPABASE_KEY is not set.")
 
-
-def allowed_file(filename):
-  return (
-      '.' in filename
-      and filename.rsplit('.', 1)[1].lower() in ALLOWED_EXTENSIONS
-  )
-
-
-def init_db():
-  conn = sqlite3.connect('database.db')
-  cursor = conn.cursor()
-  cursor.execute('''
-        CREATE TABLE IF NOT EXISTS posts (
-            id INTEGER PRIMARY KEY AUTOINCREMENT,
-            name TEXT,
-            message TEXT NOT NULL,
-            image TEXT,
-            created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
-        )
-    ''')
-  cursor.execute('''
-        CREATE TABLE IF NOT EXISTS comments (
-            id INTEGER PRIMARY KEY AUTOINCREMENT,
-            post_id INTEGER,
-            name TEXT,
-            comment TEXT NOT NULL,
-            created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
-            FOREIGN KEY (post_id) REFERENCES posts (id) ON DELETE CASCADE
-        )
-    ''')
-  conn.commit()
-  conn.close()
-
-
-init_db()
-
+supabase = create_client(SUPABASE_URL, SUPABASE_KEY)
 
 @app.route('/', methods=['GET', 'POST'])
 def index():
-  if request.method == 'POST':
-    form_type = request.form.get('form_type')
+    if request.method == 'POST':
+        form_type = request.form.get('form_type')
+        
+        # กรณีสร้างโพสต์ใหม่
+        if form_type == 'post':
+            name = request.form.get('name').strip() or 'นิรนาม'
+            message = request.form.get('message').strip()
+            
+            if message:
+                # หมายเหตุ: เรื่องการอัปโหลดรูปบน Vercel/Supabase แนะนำให้ข้ามไปก่อนหรือใช้ URL รูปภาพ
+                supabase.table('posts').insert({
+                    'name': name,
+                    'message': message,
+                    'image': None
+                }).execute()
+                flash('สร้างกระทู้สำเร็จ!', 'success')
+            return redirect(url_for('index'))
+            
+        # กรณีพิมพ์คอมเมนต์
+        elif form_type == 'comment':
+            post_id = request.form.get('post_id')
+            comment_name = request.form.get('comment_name').strip() or 'นิรนาม'
+            comment_message = request.form.get('comment_message').strip()
+            
+            if comment_message and post_id:
+                supabase.table('comments').insert({
+                    'post_id': int(post_id),
+                    'name': comment_name,
+                    'comment': comment_message
+                }).execute()
+                flash('ส่งความคิดเห็นสำเร็จ!', 'success')
+            return redirect(url_for('index'))
 
-    if form_type == 'post':
-      name = request.form.get('name').strip()
-      message = request.form.get('message').strip()
-      file = request.files.get('image')
+    # ดึงข้อมูลโพสต์ทั้งหมดเรียงจากใหม่ไปเก่า
+    posts_response = supabase.table('posts').select('*').order('id', desc=True).execute()
+    posts = posts_response.data if posts_response.data else []
 
-      if not message:
-        flash('กรุณาใส่ข้อความที่ต้องการโพสต์!', 'danger')
-        return redirect(url_for('index'))
+    # ดึงคอมเมนต์ทั้งหมดมาผูกกับแต่ละโพสต์
+    comments_response = supabase.table('comments').select('*').execute()
+    all_comments = comments_response.data if comments_response.data else []
 
-      if not name:
-        name = 'ไม่ระบุตัวตน'
+    # จัดกลุ่มคอมเมนต์ใส่เข้าไปในโพสต์แต่ละอัน
+    for post in posts:
+        post['comments'] = [c for c in all_comments if c['post_id'] == post['id']]
 
-      image_filename = None
-      if file and allowed_file(file.filename):
-        filename = secure_filename(file.filename)
-        image_filename = f'{int(time.time())}_{filename}'
-        file.save(os.path.join(app.config['UPLOAD_FOLDER'], image_filename))
+    is_admin = session.get('is_admin', False)
+    return render_template('index.html', posts=posts, is_admin=is_admin)
 
-      conn = sqlite3.connect('database.db')
-      cursor = conn.cursor()
-      cursor.execute(
-          'INSERT INTO posts (name, message, image) VALUES (?, ?, ?)',
-          (name, message, image_filename),
-      )
-      conn.commit()
-      conn.close()
-
-      flash('โพสต์ข้อความของคุณเรียบร้อยแล้ว!', 'success')
-      return redirect(url_for('index'))
-
-    elif form_type == 'comment':
-      post_id = request.form.get('post_id')
-      name = request.form.get('comment_name').strip()
-      comment = request.form.get('comment_message').strip()
-
-      if not comment:
-        flash('กรุณาใส่ข้อความคอมเมนต์!', 'danger')
-        return redirect(url_for('index'))
-
-      if not name:
-        name = 'ไม่ระบุตัวตน'
-
-      conn = sqlite3.connect('database.db')
-      cursor = conn.cursor()
-      cursor.execute(
-          'INSERT INTO comments (post_id, name, comment) VALUES (?, ?, ?)',
-          (post_id, name, comment),
-      )
-      conn.commit()
-      conn.close()
-
-      flash('ตอบกลับคอมเมนต์เรียบร้อยแล้ว!', 'success')
-      return redirect(url_for('index'))
-
-  conn = sqlite3.connect('database.db')
-  conn.row_factory = sqlite3.Row
-  cursor = conn.cursor()
-  cursor.execute('SELECT * FROM posts ORDER BY id DESC')
-  posts_db = cursor.fetchall()
-
-  posts = []
-  for p in posts_db:
-    post_dict = dict(p)
-    cursor.execute(
-        'SELECT * FROM comments WHERE post_id = ? ORDER BY id ASC',
-        (post_dict['id'],),
-    )
-    post_dict['comments'] = cursor.fetchall()
-    posts.append(post_dict)
-
-  conn.close()
-
-  return render_template(
-      'index.html', posts=posts, is_admin=session.get('is_admin', False)
-  )
-
-
-# ระบบล็อกอินแอดมิน (รหัสผ่านตั้งไว้ว่า admin123 สามารถเปลี่ยนได้ตรงนี้)
+# ระบบเข้าสู่ระบบแอดมิน
 @app.route('/login', methods=['POST'])
 def login():
-  password = request.form.get('password')
-  if password == 'admin123':
-    session['is_admin'] = True
-    flash('เข้าสู่ระบบแอดมินสำเร็จ!', 'success')
-  else:
-    flash('รหัสผ่านแอดมินไม่ถูกต้อง!', 'danger')
-  return redirect(url_for('index'))
+    password = request.form.get('password')
+    if password == 'admin123':  # รหัสผ่านแอดมินตั้งต้น
+        session['is_admin'] = True
+        flash('เข้าสู่ระบบแอดมินสำเร็จ', 'success')
+    else:
+        flash('รหัสผ่านไม่ถูกต้อง!', 'error')
+    return redirect(url_for('index'))
 
-
-# ระบบออกจากระบบแอดมิน
+# ออกจากระบบแอดมิน
 @app.route('/logout')
 def logout():
-  session.pop('is_admin', None)
-  return redirect(url_for('index'))
+    session.pop('is_admin', None)
+    flash('ออกจากระบบแล้ว', 'success')
+    return redirect(url_for('index'))
 
-
-# ระบบลบโพสต์ (เฉพาะแอดมิน)
+# ลบโพสต์ (เฉพาะแอดมิน)
 @app.route('/delete_post/<int:post_id>')
 def delete_post(post_id):
-  if not session.get('is_admin'):
-    flash('คุณไม่มีสิทธิ์ใช้งานส่วนนี้!', 'danger')
+    if not session.get('is_admin'):
+        flash('คุณไม่มีสิทธิ์ใช้งานส่วนนี้', 'error')
+        return redirect(url_for('index'))
+    
+    # ลบโพสต์ (คอมเมนต์จะถูกลบอัตโนมัติหากตั้งค่า Cascade ไว้ หรือสามารถลบแยกได้)
+    supabase.table('posts').delete().eq('id', post_id).execute()
+    flash('ลบโพสต์เรียบร้อยแล้ว', 'success')
     return redirect(url_for('index'))
 
-  conn = sqlite3.connect('database.db')
-  cursor = conn.cursor()
-  # ลบรูปภาพประกอบถ้ามี
-  cursor.execute('SELECT image FROM posts WHERE id = ?', (post_id,))
-  row = cursor.fetchone()
-  if row and row[0]:
-    img_path = os.path.join(app.config['UPLOAD_FOLDER'], row[0])
-    if os.path.exists(img_path):
-      os.remove(img_path)
-
-  cursor.execute('DELETE FROM posts WHERE id = ?', (post_id,))
-  cursor.execute('DELETE FROM comments WHERE post_id = ?', (post_id,))
-  conn.commit()
-  conn.close()
-
-  flash('ลบโพสต์เรียบร้อยแล้ว', 'success')
-  return redirect(url_for('index'))
-
-
-# ระบบลบความคิดเห็น (เฉพาะแอดมิน)
+# ลบคอมเมนต์ (เฉพาะแอดมิน)
 @app.route('/delete_comment/<int:comment_id>')
 def delete_comment(comment_id):
-  if not session.get('is_admin'):
-    flash('คุณไม่มีสิทธิ์ใช้งานส่วนนี้!', 'danger')
+    if not session.get('is_admin'):
+        flash('คุณไม่มีสิทธิ์ใช้งานส่วนนี้', 'error')
+        return redirect(url_for('index'))
+    
+    supabase.table('comments').delete().eq('id', comment_id).execute()
+    flash('ลบคอมเมนต์เรียบร้อยแล้ว', 'success')
     return redirect(url_for('index'))
 
-  conn = sqlite3.connect('database.db')
-  cursor = conn.cursor()
-  cursor.execute('DELETE FROM comments WHERE id = ?', (comment_id,))
-  conn.commit()
-  conn.close()
-
-  flash('ลบความคิดเห็นเรียบร้อยแล้ว', 'success')
-  return redirect(url_for('index'))
-
-
 if __name__ == '__main__':
-  app.run(debug=True)
+    app.run(debug=True)
