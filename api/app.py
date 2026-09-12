@@ -2,7 +2,7 @@ import os
 from flask import Flask, render_template, request, redirect, url_for, session, flash
 from supabase import create_client
 
-app = Flask(__name__)
+app = Flask(__name__, template_folder='../templates', static_folder='../static')
 app.secret_key = 'your_secret_key_change_this_to_something_secure'
 
 # ดึงค่า URL และ Key จาก Environment Variables
@@ -51,7 +51,7 @@ def index():
             return redirect(url_for('index'))
 
     # ดึงข้อมูลโพสต์ทั้งหมดเรียงจากใหม่ไปเก่า
-    posts_response = supabase.table('posts').select('*').order('id', desc=True).execute()
+    posts_response = supabase.table('posts').select('*').order('id', ascending=False).execute()
     posts = posts_response.data if posts_response.data else []
 
     # ดึงคอมเมนต์ทั้งหมดมาผูกกับแต่ละโพสต์
